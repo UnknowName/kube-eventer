@@ -77,6 +77,9 @@ dingtalk sink usage
 level: Normal or Warning. The event level greater than global level will emit.
 label: some thing unique when you want to distinguish different k8s clusters.
 */
+
+// 定义一个装饰器，对发送增加一个过滤功能，不需要每条都发
+
 type DingTalkSink struct {
 	Endpoint   string
 	Namespaces []string
@@ -216,6 +219,7 @@ func createMsgFromEvent(d *DingTalkSink, event *v1.Event) *DingTalkMsg {
 }
 
 func NewDingTalkSink(uri *url.URL) (*DingTalkSink, error) {
+	klog.Infof("创建钉钉Sink的原始URL为 ", uri.String())
 	d := &DingTalkSink{
 		Level: WARNING,
 	}
@@ -253,8 +257,9 @@ func NewDingTalkSink(uri *url.URL) (*DingTalkSink, error) {
 	if region := opts["region"]; len(region) >= 1 {
 		d.Region = region[0]
 	}
-
+	klog.Info("opts[namespaces] ", opts["namespaces"])
 	d.Namespaces = getValues(opts["namespaces"])
+	klog.Info("d.Namespaces ", d.Namespaces)
 	// kinds:https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#lists-and-simple-kinds
 	// such as node,pod,component and so on
 	d.Kinds = getValues(opts["kinds"])

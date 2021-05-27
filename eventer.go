@@ -74,6 +74,7 @@ func main() {
 	if len(argSources) != 1 {
 		klog.Fatal("Wrong number of sources specified")
 	}
+	klog.Info(argSources, argSinks)
 	sourceFactory := sources.NewSourceFactory()
 	sources, err := sourceFactory.BuildAll(argSources)
 	if err != nil {

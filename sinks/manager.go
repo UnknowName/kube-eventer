@@ -15,6 +15,8 @@
 package sinks
 
 import (
+	v1 "k8s.io/api/core/v1"
+	"log"
 	"sync"
 	"time"
 
@@ -142,5 +144,14 @@ func export(s core.EventSink, data *core.EventBatch) {
 			WithLabelValues(s.Name()).
 			Observe(float64(time.Since(startTime)) / float64(time.Millisecond))
 	}()
-	s.ExportEvents(data)
+	eventBatch := core.EventBatch{Timestamp: data.Timestamp, Events: make([]*v1.Event, 0)}
+	for _, _event := range data.Events {
+		if _event.Reason != "BackOff" {
+			continue
+		}
+		// _event.Reason = "RestartPod"
+		eventBatch.Events = append(eventBatch.Events, _event)
+	}
+	log.Printf("通过Sink %s 发送消息%d条", s.Name(), len(eventBatch.Events))
+	s.ExportEvents(&eventBatch)
 }
