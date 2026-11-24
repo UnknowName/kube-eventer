@@ -1,4 +1,4 @@
-FROM golang:1.14 AS build-env
+FROM golang:1.19.3 AS build-env
 ADD . /src/github.com/AliyunContainerService/kube-eventer
 ENV GOPATH /:/src/github.com/AliyunContainerService/kube-eventer/vendor
 ENV GO111MODULE on
@@ -16,7 +16,8 @@ COPY --from=build-env /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 ENV TZ "Asia/Shanghai"
 RUN apk add --no-cache tzdata
 #COPY deploy/entrypoint.sh /
-RUN addgroup -g 1000 nonroot && \
+RUN apk add --no-cache tzdata ca-certificates && \
+    addgroup -g 1000 nonroot && \
     adduser -u 1000 -D -H -G nonroot nonroot && \
     chown -R nonroot:nonroot /kube-eventer
 USER nonroot:nonroot

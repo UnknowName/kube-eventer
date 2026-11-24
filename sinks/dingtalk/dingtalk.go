@@ -219,7 +219,7 @@ func createMsgFromEvent(d *DingTalkSink, event *v1.Event) *DingTalkMsg {
 }
 
 func NewDingTalkSink(uri *url.URL) (*DingTalkSink, error) {
-	klog.Infof("创建钉钉Sink的原始URL为 ", uri.String())
+	klog.Infof("创建钉钉Sink的原始URL为 %s", uri.String())
 	d := &DingTalkSink{
 		Level: WARNING,
 	}

@@ -61,7 +61,6 @@ func main() {
 		fmt.Println(version.VersionInfo())
 		os.Exit(0)
 	}
-
 	setMaxProcs()
 
 	klog.Infof(strings.Join(os.Args, " "))

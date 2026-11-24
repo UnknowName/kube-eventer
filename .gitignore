@@ -1,5 +1,36 @@
+# —— 已有规则 ——
 .idea
-kube-eventer 
-.git 
+kube-eventer
+.git
 coverage.txt
 .DS_Store
+
+# —— Go 项目构建产物 ——
+# 编译生成的二进制
+kube-eventer
+*.exe
+*.test
+*.out
+# 覆盖率输出
+.cover/
+coverage.out
+*.cover
+
+# —— 依赖：vendor 目录不入库 ——
+vendor/
+
+# —— IDE / 编辑器 ——
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# —— 操作系统 ——
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# —— 临时文件 ——
+tmp/
+*.log

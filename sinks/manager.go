@@ -15,10 +15,11 @@
 package sinks
 
 import (
-	v1 "k8s.io/api/core/v1"
 	"log"
 	"sync"
 	"time"
+
+	v1 "k8s.io/api/core/v1"
 
 	"github.com/AliyunContainerService/kube-eventer/core"
 	"github.com/prometheus/client_golang/prometheus"
@@ -146,11 +147,20 @@ func export(s core.EventSink, data *core.EventBatch) {
 	}()
 	eventBatch := core.EventBatch{Timestamp: data.Timestamp, Events: make([]*v1.Event, 0)}
 	for _, _event := range data.Events {
-		if _event.Reason != "BackOff" {
-			continue
+		reason := _event.Reason
+		klog.Info(_event.Message, _event.Reason, _event.Count)
+		// 只关注"异常"事件 Reason
+		// kubelet 官方常量见 pkg/kubelet/events/event.go
+		// OOMKilling / FailedScheduling / FailedCreate 为各组件直接 emit 的字符串
+		if reason == "BackOff" || // kubelet: 容器/镜像反复启动失败，进入退避
+			reason == "Killing" || // kubelet: 容器被终止
+			reason == "OOMKilling" || // kubelet: cgroup OOM Killer 触发（资源超限核心信号）
+			reason == "Unhealthy" || // kubelet: 存活/就绪探针失败
+			reason == "FailedCreate" || // controller-manager: 创建 Pod 失败（含配额超限）
+			reason == "FailedScheduling" { // scheduler: Pod 调度失败（含资源不足）
+			eventBatch.Events = append(eventBatch.Events, _event)
 		}
-		// _event.Reason = "RestartPod"
-		eventBatch.Events = append(eventBatch.Events, _event)
+
 	}
 	log.Printf("通过Sink %s 发送消息%d条", s.Name(), len(eventBatch.Events))
 	s.ExportEvents(&eventBatch)
