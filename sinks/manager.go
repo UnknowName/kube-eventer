@@ -15,6 +15,7 @@
 package sinks
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -138,6 +139,99 @@ func (this *sinkManager) Stop() {
 	}
 }
 
+// allowedReasons 定义需要关注的异常事件 Reason 白名单
+// kubelet 官方常量见 pkg/kubelet/events/event.go
+// OOMKilling / FailedScheduling / FailedCreate 为各组件直接 emit 的字符串
+var allowedReasons = map[string]struct{}{
+	"BackOff":          {}, // kubelet: 容器/镜像反复启动失败，进入退避
+	"Killing":          {}, // kubelet: 容器被终止
+	"OOMKilling":       {}, // kubelet: cgroup OOM Killer 触发（资源超限核心信号）
+	"Unhealthy":        {}, // kubelet: 存活/就绪探针失败
+	"FailedCreate":     {}, // controller-manager: 创建 Pod 失败（含配额超限）
+	"FailedScheduling": {}, // scheduler: Pod 调度失败（含资源不足）
+}
+
+// EventDeduplicator 实现基于时间窗口的 Event 发送抑制
+// 在冷却窗口内，相同 Event（除 timestamp 外字段一致）只被发送一次
+type EventDeduplicator struct {
+	mu sync.Mutex
+	// 上次被"放行"的 event key → 发送时间
+	sentAt map[string]time.Time
+	window time.Duration // 冷却窗口时长
+}
+
+// NewEventDeduplicator 创建一个指定窗口时长的去重器
+func NewEventDeduplicator(window time.Duration) *EventDeduplicator {
+	d := &EventDeduplicator{
+		sentAt: make(map[string]time.Time),
+		window: window,
+	}
+	// 启动后台清理，防止 map 无限增长
+	go d.cleanupLoop()
+	return d
+}
+
+// MakeEventKey 根据 Event 的稳定字段生成唯一标识，刻意排除 FirstTimestamp/LastTimestamp/EventTime
+// 相同"事件类型"的 Event 应产出相同 key
+func MakeEventKey(e *v1.Event) string {
+	if e == nil {
+		return ""
+	}
+	io := e.InvolvedObject
+	return fmt.Sprintf("%s/%s/%s|%s|%s|%s|%s|%s",
+		io.Kind,
+		io.Namespace,
+		io.Name,
+		e.Reason,
+		e.Message,
+		e.Source.Component,
+		e.Source.Host,
+		e.Type,
+	)
+}
+
+// ShouldSend 判断该 Event 是否在冷却窗口内首次出现
+// 返回 true 表示应该放行；同时会更新发送时间
+func (d *EventDeduplicator) ShouldSend(e *v1.Event) bool {
+	if e == nil {
+		return false
+	}
+	key := MakeEventKey(e)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	if lastSent, ok := d.sentAt[key]; ok {
+		if now.Sub(lastSent) < d.window {
+			// 窗口内重复事件，抑制发送
+			return false
+		}
+	}
+	// 放行并记录时间戳
+	d.sentAt[key] = now
+	return true
+}
+
+// cleanupLoop 定期清理已过期的 entry，防止内存泄漏
+func (d *EventDeduplicator) cleanupLoop() {
+	ticker := time.NewTicker(d.window)
+	defer ticker.Stop()
+	for range ticker.C {
+		d.mu.Lock()
+		cutoff := time.Now().Add(-d.window)
+		for k, v := range d.sentAt {
+			if v.Before(cutoff) {
+				delete(d.sentAt, k)
+			}
+		}
+		d.mu.Unlock()
+	}
+}
+
+// eventDeduplicator 是进程级单例，在 sinks manager 初始化时创建
+var eventDeduplicator = NewEventDeduplicator(2 * time.Minute)
+
 func export(s core.EventSink, data *core.EventBatch) {
 	startTime := time.Now()
 	defer func() {
@@ -145,23 +239,24 @@ func export(s core.EventSink, data *core.EventBatch) {
 			WithLabelValues(s.Name()).
 			Observe(float64(time.Since(startTime)) / float64(time.Millisecond))
 	}()
-	eventBatch := core.EventBatch{Timestamp: data.Timestamp, Events: make([]*v1.Event, 0)}
-	for _, _event := range data.Events {
-		reason := _event.Reason
-		klog.Info(_event.Message, _event.Reason, _event.Count)
-		// 只关注"异常"事件 Reason
-		// kubelet 官方常量见 pkg/kubelet/events/event.go
-		// OOMKilling / FailedScheduling / FailedCreate 为各组件直接 emit 的字符串
-		if reason == "BackOff" || // kubelet: 容器/镜像反复启动失败，进入退避
-			reason == "Killing" || // kubelet: 容器被终止
-			reason == "OOMKilling" || // kubelet: cgroup OOM Killer 触发（资源超限核心信号）
-			reason == "Unhealthy" || // kubelet: 存活/就绪探针失败
-			reason == "FailedCreate" || // controller-manager: 创建 Pod 失败（含配额超限）
-			reason == "FailedScheduling" { // scheduler: Pod 调度失败（含资源不足）
-			eventBatch.Events = append(eventBatch.Events, _event)
+
+	filtered := core.EventBatch{Timestamp: data.Timestamp, Events: make([]*v1.Event, 0)}
+	for _, ev := range data.Events {
+		// 第一步：按 Reason 白名单过滤，只关注异常事件
+		klog.Info("**message:", ev.Message, "**reason:", ev.Reason, "**count:", ev.Count)
+		if _, ok := allowedReasons[ev.Reason]; !ok {
+			continue
+		}
+		// 第二步：2分钟窗口内相同 Event 只发一次（抑制重复告警）
+		if !eventDeduplicator.ShouldSend(ev) {
+			klog.V(2).Infof("抑制重复 event: reason=%s obj=%s/%s",
+				ev.Reason, ev.InvolvedObject.Kind, ev.InvolvedObject.Name)
+			continue
 		}
 
+		filtered.Events = append(filtered.Events, ev)
 	}
-	log.Printf("通过Sink %s 发送消息%d条", s.Name(), len(eventBatch.Events))
-	s.ExportEvents(&eventBatch)
+
+	log.Printf("通过Sink %s 发送消息%d条", s.Name(), len(filtered.Events))
+	s.ExportEvents(&filtered)
 }
